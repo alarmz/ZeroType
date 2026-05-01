@@ -8,6 +8,12 @@ on:
     branches: [master, main]
   workflow_dispatch:
 
+# `contents: write` is needed for the tag-driven release step (the default
+# GITHUB_TOKEN has read-only contents permission and would 403 on POST
+# /repos/:owner/:repo/releases).
+permissions:
+  contents: write
+
 # Cancel in-flight runs on the same ref when a new push lands.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

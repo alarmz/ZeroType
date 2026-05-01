@@ -7,6 +7,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:zero_type/core/constants/model_pricing.dart';
 import 'package:zero_type/core/constants/app_constants.dart';
 import 'package:zero_type/core/di/injection.dart';
+import 'package:zero_type/core/services/app_logger.dart';
 import 'package:zero_type/core/services/recording_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zero_type/core/services/sound_service.dart';
@@ -42,7 +43,8 @@ class ZeroTypeController extends _$ZeroTypeController {
   }
 
   Future<void> toggleRecording() async {
-    print('[ZeroTypeController] Hotkey triggered! Current status: ${state.status}');
+    AppLogger.log('ZeroType',
+        'hotkey activated; current status=${state.status.name}');
     if (state.status == ZeroTypeStatus.recording) {
       await _stopAndProcess();
     } else if (state.status == ZeroTypeStatus.idle) {
@@ -76,13 +78,7 @@ class ZeroTypeController extends _$ZeroTypeController {
     if (config.providerId == null || config.providerId!.isEmpty ||
         config.apiKey == null || config.apiKey!.isEmpty ||
         config.modelId == null || config.modelId!.isEmpty) {
-      await _showNativeOverlay('error', '請先完成語音辨識模型設定');
-      await getIt<SoundService>().playCancelSound();
-      await Future.delayed(const Duration(seconds: 3));
-      if (ref.mounted && !_cancelled) {
-        state = const ZeroTypeState();
-        await _hideNativeOverlay();
-      }
+      await _failStartup('請先完成語音辨識模型設定（provider/model/apiKey 至少一項缺失）');
       return;
     }
 
@@ -104,23 +100,11 @@ class ZeroTypeController extends _$ZeroTypeController {
 
     if (!ref.mounted || _cancelled) return;
     if (!isAccessibilityOk) {
-      await _showNativeOverlay('error', '請先授權輔助使用權限');
-      await getIt<SoundService>().playCancelSound();
-      await Future.delayed(const Duration(seconds: 3));
-      if (ref.mounted && !_cancelled) {
-        state = const ZeroTypeState();
-        await _hideNativeOverlay();
-      }
+      await _failStartup('請先授權輔助使用權限');
       return;
     }
     if (!hasPermission) {
-      await _showNativeOverlay('error', '請先授權麥克風權限');
-      await getIt<SoundService>().playCancelSound();
-      await Future.delayed(const Duration(seconds: 3));
-      if (ref.mounted && !_cancelled) {
-        state = const ZeroTypeState();
-        await _hideNativeOverlay();
-      }
+      await _failStartup('請先授權麥克風權限');
       return;
     }
 
@@ -155,18 +139,37 @@ class ZeroTypeController extends _$ZeroTypeController {
           },
         ),
       ]);
-    } catch (e) {
+    } catch (e, st) {
+      AppLogger.log('ZeroType', 'startRecording threw', error: e, st: st);
       if (!ref.mounted || _cancelled) return;
       state = state.copyWith(
         status: ZeroTypeStatus.error,
         errorMessage: '錄音啟動失敗：$e',
       );
-      await _showNativeOverlay('error', '錄音啟動失敗');
+      await _showNativeOverlay('error', '錄音啟動失敗：$e');
       await Future.delayed(const Duration(seconds: 3));
       if (ref.mounted && !_cancelled) {
         state = const ZeroTypeState();
         await _hideNativeOverlay();
       }
+    }
+  }
+
+  /// Centralised early-exit error path. Sets state to error with [msg] (so the
+  /// Flutter overlay on Windows shows the actual reason), fires the macOS
+  /// native overlay equivalent, plays cancel sound, and resets after 3s.
+  Future<void> _failStartup(String msg) async {
+    AppLogger.log('ZeroType', 'startRecording aborted: $msg');
+    state = state.copyWith(
+      status: ZeroTypeStatus.error,
+      errorMessage: msg,
+    );
+    await _showNativeOverlay('error', msg);
+    await getIt<SoundService>().playCancelSound();
+    await Future.delayed(const Duration(seconds: 3));
+    if (ref.mounted && !_cancelled) {
+      state = const ZeroTypeState();
+      await _hideNativeOverlay();
     }
   }
 
@@ -274,7 +277,8 @@ class ZeroTypeController extends _$ZeroTypeController {
         await _hideNativeOverlay();
       }
     } catch (e, st) {
-      print('[ZeroType] ERROR in _stopAndProcess: $e\n$st');
+      AppLogger.log('ZeroType', '_stopAndProcess threw',
+          error: e, st: st);
       if (!ref.mounted || _cancelled) return;
       state = state.copyWith(
         status: ZeroTypeStatus.error,

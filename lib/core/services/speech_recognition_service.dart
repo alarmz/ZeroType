@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:zero_type/core/services/app_logger.dart';
 
 typedef TranscriptionResult = ({
   String text,
@@ -22,7 +23,8 @@ class SpeechRecognitionService {
     required String prompt,
     String? customEndpoint,
   }) async {
-    print('[SpeechRecognition] Transcribing with $provider ($model)...');
+    AppLogger.log('SpeechRecognition',
+        'transcribe start: provider=$provider model=$model file=$audioFilePath endpoint=${customEndpoint ?? '(default)'}');
 
     switch (provider) {
       case 'openai':
@@ -66,32 +68,74 @@ class SpeechRecognitionService {
     required String apiKey,
   }) async {
     final url = '${_stripTrailingSlash(baseUrl)}/v1/models';
-    final response = await _dio.get<dynamic>(
-      url,
-      options: Options(
-        headers: {'Authorization': 'Bearer $apiKey'},
-      ),
-    );
+    AppLogger.log('LiteLLM', 'GET $url');
+    try {
+      final response = await _dio.get<dynamic>(
+        url,
+        options: Options(
+          headers: {'Authorization': 'Bearer $apiKey'},
+        ),
+      );
 
-    Map<String, dynamic>? body;
-    if (response.data is Map<String, dynamic>) {
-      body = response.data as Map<String, dynamic>;
-    } else if (response.data is String) {
-      body = jsonDecode(response.data as String) as Map<String, dynamic>;
+      Map<String, dynamic>? body;
+      if (response.data is Map<String, dynamic>) {
+        body = response.data as Map<String, dynamic>;
+      } else if (response.data is String) {
+        body = jsonDecode(response.data as String) as Map<String, dynamic>;
+      }
+      final list = body?['data'] as List? ?? const [];
+      final models = list
+          .whereType<Map<String, dynamic>>()
+          .map((m) {
+            final id = m['id'] as String? ?? '';
+            return (id: id, name: id);
+          })
+          .where((m) => m.id.isNotEmpty)
+          .toList();
+      AppLogger.log('LiteLLM',
+          'fetched ${models.length} models from /v1/models');
+      return models;
+    } on DioException catch (e) {
+      throw _wrapDioError('fetchAvailableModels GET $url', e);
     }
-    final list = body?['data'] as List? ?? const [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map((m) {
-          final id = m['id'] as String? ?? '';
-          return (id: id, name: id);
-        })
-        .where((m) => m.id.isNotEmpty)
-        .toList();
   }
 
   static String _stripTrailingSlash(String s) =>
       s.replaceAll(RegExp(r'/+$'), '');
+
+  /// Convert a DioException into a readable Exception with status, message,
+  /// and a truncated response body. Also logs the full details so the file
+  /// log retains everything useful for diagnosis.
+  Exception _wrapDioError(String context, DioException e) {
+    final status = e.response?.statusCode;
+    final raw = e.response?.data;
+    final bodyStr = raw == null ? '' : raw.toString();
+    final shortBody = bodyStr.length > 400
+        ? '${bodyStr.substring(0, 400)}…(truncated)'
+        : bodyStr;
+
+    AppLogger.log(
+      'HTTP',
+      '$context failed: type=${e.type} status=${status ?? '-'} '
+          'msg=${e.message ?? '-'}\n  body: $shortBody',
+      error: e,
+    );
+
+    final summary = StringBuffer();
+    if (status != null) summary.write('HTTP $status');
+    if (e.type != DioExceptionType.unknown) {
+      if (summary.isNotEmpty) summary.write(' ');
+      summary.write('(${e.type.name})');
+    }
+    if (e.message != null && e.message!.isNotEmpty) {
+      if (summary.isNotEmpty) summary.write(' — ');
+      summary.write(e.message);
+    }
+    if (shortBody.isNotEmpty) {
+      summary.write('\n回應：$shortBody');
+    }
+    return Exception(summary.isEmpty ? e.toString() : summary.toString());
+  }
 
   Future<TranscriptionResult> _transcribeWithOpenAI({
     required String audioFilePath,
@@ -114,13 +158,20 @@ class SpeechRecognitionService {
         ? customEndpoint
         : 'https://api.openai.com/v1/audio/transcriptions';
 
-    final response = await _dio.post<dynamic>(
-      url,
-      data: formData,
-      options: Options(
-        headers: {'Authorization': 'Bearer $apiKey'},
-      ),
-    );
+    AppLogger.log('OpenAI', 'POST $url model=$model');
+
+    Response<dynamic> response;
+    try {
+      response = await _dio.post<dynamic>(
+        url,
+        data: formData,
+        options: Options(
+          headers: {'Authorization': 'Bearer $apiKey'},
+        ),
+      );
+    } on DioException catch (e) {
+      throw _wrapDioError('OpenAI/LiteLLM POST $url', e);
+    }
 
     // Parse JSON response to extract text and token usage
     Map<String, dynamic>? data;
@@ -153,7 +204,7 @@ class SpeechRecognitionService {
     required String prompt,
     String? customEndpoint,
   }) async {
-    print('[Gemini] Start direct transcription: $audioFilePath');
+    AppLogger.log('Gemini', 'start: $audioFilePath');
 
     final fileToUpload = File(audioFilePath);
     if (!fileToUpload.existsSync()) {
@@ -217,12 +268,11 @@ class SpeechRecognitionService {
       final inputTokens = usageMeta?['promptTokenCount'] as int?;
       final outputTokens = usageMeta?['candidatesTokenCount'] as int?;
 
-      print('[Gemini] Success! tokens: in=$inputTokens out=$outputTokens');
+      AppLogger.log('Gemini',
+          'success tokens: in=$inputTokens out=$outputTokens');
       return (text: text, inputTokens: inputTokens, outputTokens: outputTokens);
     } on DioException catch (e) {
-      print('[Gemini] DioException: ${e.message}');
-      print('[Gemini] Status: ${e.response?.statusCode}');
-      rethrow;
+      throw _wrapDioError('Gemini POST $url', e);
     }
   }
 }

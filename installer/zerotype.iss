@@ -54,8 +54,12 @@ RestartApplications=no
 SetupLogging=yes
 
 [Languages]
-Name: "english";            MessagesFile: "compiler:Default.isl"
-Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+; Wizard chrome stays English. The Chinese-speaking audience reads the
+; bilingual InfoBeforeFile page which carries the actual setup choices.
+; (Inno Setup ships ChineseTraditional only as an "unofficial" language
+; file that's not present on every install — including the default GHA
+; windows-latest image.)
+Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon";     Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

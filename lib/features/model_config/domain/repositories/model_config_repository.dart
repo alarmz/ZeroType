@@ -16,4 +16,9 @@ abstract class ModelConfigRepository {
 
   Future<String?> getCustomEndpoint(String providerId);
   Future<void> saveCustomEndpoint(String providerId, String endpoint);
+
+  /// Cached model list fetched from a dynamic provider's /v1/models endpoint.
+  /// Empty list when nothing has been fetched yet.
+  Future<List<AiModel>> getCachedModels(String providerId);
+  Future<void> saveCachedModels(String providerId, List<AiModel> models);
 }

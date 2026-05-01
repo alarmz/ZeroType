@@ -170,6 +170,15 @@ class _SpeechConfigSection extends ConsumerWidget {
               initialValue: state.apiKey ?? '',
               onSave: (val) => ref.read(speechProviderControllerProvider.notifier).saveApiKey(val),
             ),
+            if (state.providerId == 'litellm') ...[
+              const SizedBox(height: 24),
+              _LiteLLMEndpointInput(
+                initialValue: state.customEndpoint ?? '',
+                onSave: (val) => ref
+                    .read(speechProviderControllerProvider.notifier)
+                    .saveCustomEndpoint(val),
+              ),
+            ],
             const SizedBox(height: 24),
             Row(
               children: [
@@ -181,21 +190,37 @@ class _SpeechConfigSection extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 12),
-            _ModelDropdown(
-              models: selectedProvider.models,
-              selectedModelId: state.modelId,
-              onChanged: (val) {
-                if (val != null) {
-                  ref.read(speechProviderControllerProvider.notifier).selectModel(val);
-                }
-              },
-            ),
-            const SizedBox(height: 24),
-            _AdvancedConfigSection(
-              providerId: state.providerId ?? '',
-              customEndpoint: state.customEndpoint ?? '',
-              onSaveCustomEndpoint: (val) => ref.read(speechProviderControllerProvider.notifier).saveCustomEndpoint(val),
-            ),
+            if (state.providerId == 'litellm')
+              _LiteLLMModelPicker(
+                baseUrl: state.customEndpoint ?? '',
+                apiKey: state.apiKey ?? '',
+                selectedModelId: state.modelId,
+                onChanged: (val) {
+                  if (val != null) {
+                    ref
+                        .read(speechProviderControllerProvider.notifier)
+                        .selectModel(val);
+                  }
+                },
+              )
+            else
+              _ModelDropdown(
+                models: selectedProvider.models,
+                selectedModelId: state.modelId,
+                onChanged: (val) {
+                  if (val != null) {
+                    ref.read(speechProviderControllerProvider.notifier).selectModel(val);
+                  }
+                },
+              ),
+            if (state.providerId != 'litellm') ...[
+              const SizedBox(height: 24),
+              _AdvancedConfigSection(
+                providerId: state.providerId ?? '',
+                customEndpoint: state.customEndpoint ?? '',
+                onSaveCustomEndpoint: (val) => ref.read(speechProviderControllerProvider.notifier).saveCustomEndpoint(val),
+              ),
+            ],
           ],
         );
       },
@@ -446,6 +471,228 @@ class _CustomEndpointInputState extends State<_CustomEndpointInput> {
           ],
         ),
       ],
+    );
+  }
+}
+
+class _LiteLLMEndpointInput extends StatefulWidget {
+  const _LiteLLMEndpointInput({
+    required this.initialValue,
+    required this.onSave,
+  });
+
+  final String initialValue;
+  final Function(String) onSave;
+
+  @override
+  State<_LiteLLMEndpointInput> createState() => _LiteLLMEndpointInputState();
+}
+
+class _LiteLLMEndpointInputState extends State<_LiteLLMEndpointInput> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void didUpdateWidget(_LiteLLMEndpointInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialValue != oldWidget.initialValue) {
+      _controller.text = widget.initialValue;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text('Proxy Base URL', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(width: 4),
+            const Text('*', style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(width: 8),
+            Text('(必填)', style: TextStyle(color: Colors.redAccent.withAlpha(150), fontSize: 12)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '例如：https://litellm.example.com（不要含 /v1）',
+          style: TextStyle(color: cs.onSurface.withAlpha(120), fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                decoration: InputDecoration(
+                  hintText: 'https://litellm.example.com',
+                  hintStyle: TextStyle(color: cs.onSurface.withAlpha(80)),
+                  filled: true,
+                  fillColor: cs.surface,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: cs.onSurface.withAlpha(30)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: cs.onSurface.withAlpha(30)),
+                  ),
+                ),
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton(
+              onPressed: () {
+                widget.onSave(_controller.text.trim());
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Proxy URL 已儲存'), duration: Duration(seconds: 1)),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: cs.primary,
+                foregroundColor: cs.onPrimary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              ),
+              child: const Text('儲存'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LiteLLMModelPicker extends ConsumerWidget {
+  const _LiteLLMModelPicker({
+    required this.baseUrl,
+    required this.apiKey,
+    required this.selectedModelId,
+    required this.onChanged,
+  });
+
+  final String baseUrl;
+  final String apiKey;
+  final String? selectedModelId;
+  final ValueChanged<String?> onChanged;
+
+  bool get _canFetch => baseUrl.isNotEmpty && apiKey.isNotEmpty;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cs = Theme.of(context).colorScheme;
+    final modelsAsync =
+        ref.watch(dynamicModelsControllerProvider('litellm'));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: _buildDropdown(context, modelsAsync.value ?? const [])),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: _canFetch
+                  ? '從 /v1/models 重新抓取模型清單'
+                  : '需先填入 Proxy URL 與 API Key',
+              icon: modelsAsync.isLoading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh),
+              onPressed: _canFetch && !modelsAsync.isLoading
+                  ? () async {
+                      await ref
+                          .read(dynamicModelsControllerProvider('litellm').notifier)
+                          .refresh(
+                            providerId: 'litellm',
+                            baseUrl: baseUrl,
+                            apiKey: apiKey,
+                          );
+                      if (context.mounted) {
+                        final newState =
+                            ref.read(dynamicModelsControllerProvider('litellm'));
+                        final msg = newState.hasError
+                            ? '抓取失敗：${newState.error}'
+                            : '已更新 ${newState.value?.length ?? 0} 個模型';
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(msg),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    }
+                  : null,
+            ),
+          ],
+        ),
+        if (modelsAsync.hasError) ...[
+          const SizedBox(height: 8),
+          Text(
+            '抓取錯誤：${modelsAsync.error}',
+            style: TextStyle(color: Colors.redAccent.withAlpha(200), fontSize: 12),
+          ),
+        ] else if ((modelsAsync.value ?? const []).isEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            _canFetch
+                ? '尚未抓取模型清單，按右側重新整理。'
+                : '請先填寫 Proxy Base URL 與 API Key，再按右側重新整理。',
+            style: TextStyle(color: cs.onSurface.withAlpha(120), fontSize: 12),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDropdown(BuildContext context, List<AiModel> models) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.onSurface.withAlpha(30)),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: models.any((m) => m.id == selectedModelId)
+              ? selectedModelId
+              : null,
+          isExpanded: true,
+          hint: Text(
+            models.isEmpty ? '尚未抓取模型清單' : '選擇一個模型',
+          ),
+          items: models
+              .map((m) => DropdownMenuItem(
+                    value: m.id,
+                    child: Text(m.id),
+                  ))
+              .toList(),
+          onChanged: models.isEmpty ? null : onChanged,
+        ),
+      ),
     );
   }
 }

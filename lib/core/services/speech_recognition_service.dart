@@ -41,10 +41,57 @@ class SpeechRecognitionService {
           prompt: prompt,
           customEndpoint: customEndpoint,
         );
+      case 'litellm':
+        if (customEndpoint == null || customEndpoint.isEmpty) {
+          throw Exception('LiteLLM 需要在「進階設定」中填寫 Proxy Base URL');
+        }
+        return _transcribeWithOpenAI(
+          audioFilePath: audioFilePath,
+          apiKey: apiKey,
+          model: model,
+          prompt: prompt,
+          customEndpoint:
+              '${_stripTrailingSlash(customEndpoint)}/v1/audio/transcriptions',
+        );
       default:
         throw Exception('不支援的語音辨識服務商：$provider');
     }
   }
+
+  /// Fetches the model list from an OpenAI-compatible `/v1/models` endpoint
+  /// (e.g. a LiteLLM proxy). Returns id+name records; callers map to UI
+  /// entities. The `id` is what gets sent to the transcription endpoint.
+  Future<List<({String id, String name})>> fetchAvailableModels({
+    required String baseUrl,
+    required String apiKey,
+  }) async {
+    final url = '${_stripTrailingSlash(baseUrl)}/v1/models';
+    final response = await _dio.get<dynamic>(
+      url,
+      options: Options(
+        headers: {'Authorization': 'Bearer $apiKey'},
+      ),
+    );
+
+    Map<String, dynamic>? body;
+    if (response.data is Map<String, dynamic>) {
+      body = response.data as Map<String, dynamic>;
+    } else if (response.data is String) {
+      body = jsonDecode(response.data as String) as Map<String, dynamic>;
+    }
+    final list = body?['data'] as List? ?? const [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map((m) {
+          final id = m['id'] as String? ?? '';
+          return (id: id, name: id);
+        })
+        .where((m) => m.id.isNotEmpty)
+        .toList();
+  }
+
+  static String _stripTrailingSlash(String s) =>
+      s.replaceAll(RegExp(r'/+$'), '');
 
   Future<TranscriptionResult> _transcribeWithOpenAI({
     required String audioFilePath,

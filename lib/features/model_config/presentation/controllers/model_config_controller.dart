@@ -1,5 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:zero_type/core/di/injection.dart';
+import 'package:zero_type/core/services/speech_recognition_service.dart';
 import 'package:zero_type/features/model_config/data/repositories/model_config_repository_impl.dart';
 import 'package:zero_type/features/model_config/domain/entities/ai_provider.dart';
 import 'package:zero_type/features/model_config/domain/repositories/model_config_repository.dart';
@@ -69,6 +70,40 @@ class SpeechProviderController extends _$SpeechProviderController {
     if (state.providerId != null) {
       await _repo.saveCustomEndpoint(state.providerId!, endpoint);
       ref.invalidateSelf();
+    }
+  }
+}
+
+/// Holds the dynamically-fetched model list for an OpenAI-compatible provider
+/// (currently used by `litellm`). Returns the cached list immediately on
+/// build; call `refresh()` to hit `/v1/models` and update the cache.
+@Riverpod(keepAlive: true)
+class DynamicModelsController extends _$DynamicModelsController {
+  ModelConfigRepository get _repo => _buildRepository();
+  SpeechRecognitionService get _service => getIt<SpeechRecognitionService>();
+
+  @override
+  Future<List<AiModel>> build(String providerId) async {
+    return _repo.getCachedModels(providerId);
+  }
+
+  Future<void> refresh({
+    required String providerId,
+    required String baseUrl,
+    required String apiKey,
+  }) async {
+    state = const AsyncLoading();
+    try {
+      final fetched = await _service.fetchAvailableModels(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+      );
+      final models =
+          fetched.map((m) => AiModel(id: m.id, name: m.name)).toList();
+      await _repo.saveCachedModels(providerId, models);
+      state = AsyncData(models);
+    } catch (e, st) {
+      state = AsyncError(e, st);
     }
   }
 }

@@ -351,6 +351,24 @@ class SpeechRecognitionService {
         ),
       );
     } on DioException catch (e) {
+      // Detect the specific "model is text-only, doesn't accept audio" error
+      // pattern from OpenAI-style backends and rewrite into a clear,
+      // actionable Chinese message — `_wrapDioError` would otherwise return
+      // a wall of HTTP boilerplate that buries the actual cause.
+      final bodyStr = e.response?.data?.toString() ?? '';
+      if (bodyStr.contains('image_url') &&
+          bodyStr.contains('Content blocks are expected')) {
+        AppLogger.log('LiteLLM-chat',
+            'model "$model" does not accept audio input (text+image only)');
+        throw Exception(
+          '此模型「$model」不支援音訊輸入。\n'
+          '請改選支援 audio 的模型，例如：\n'
+          '  • gemini-2.5-flash-lite / gemini-3-flash-preview（多模態）\n'
+          '  • claude-haiku-4-5 / claude-sonnet-*（多模態）\n'
+          '  • gpt-4o-audio-preview / gpt-4o-mini-audio-preview\n'
+          '  • whisper-1（純轉錄）',
+        );
+      }
       throw _wrapDioError('LiteLLM chat POST $url', e);
     }
 

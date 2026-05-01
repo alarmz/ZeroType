@@ -74,6 +74,177 @@ class SpeechRecognitionService {
     }
   }
 
+  /// Post-transcription refinement: sends `prompt + rawText` to a chat model
+  /// and returns the polished text. Used after `transcribe()` when the user
+  /// has enabled the refinement feature in settings.
+  Future<TranscriptionResult> refine({
+    required String rawText,
+    required String apiKey,
+    required String provider,
+    required String model,
+    required String prompt,
+    String? customEndpoint,
+  }) async {
+    AppLogger.log('Refine',
+        'start: provider=$provider model=$model textLen=${rawText.length} endpoint=${customEndpoint ?? '(default)'}');
+
+    if (rawText.trim().isEmpty) {
+      return (text: '', inputTokens: null, outputTokens: null);
+    }
+
+    switch (provider) {
+      case 'openai':
+        return _refineWithOpenAIChat(
+          rawText: rawText,
+          apiKey: apiKey,
+          model: model,
+          prompt: prompt,
+          baseUrl: (customEndpoint == null || customEndpoint.isEmpty)
+              ? 'https://api.openai.com'
+              : _stripTrailingSlash(customEndpoint),
+        );
+      case 'litellm':
+        if (customEndpoint == null || customEndpoint.isEmpty) {
+          throw Exception('LiteLLM 需要在「模型」頁的文字優化區填寫 Proxy Base URL');
+        }
+        return _refineWithOpenAIChat(
+          rawText: rawText,
+          apiKey: apiKey,
+          model: model,
+          prompt: prompt,
+          baseUrl: _stripTrailingSlash(customEndpoint),
+        );
+      case 'gemini':
+        return _refineWithGemini(
+          rawText: rawText,
+          apiKey: apiKey,
+          model: model,
+          prompt: prompt,
+          customEndpoint: customEndpoint,
+        );
+      default:
+        throw Exception('不支援的優化服務商：$provider');
+    }
+  }
+
+  Future<TranscriptionResult> _refineWithOpenAIChat({
+    required String rawText,
+    required String apiKey,
+    required String model,
+    required String prompt,
+    required String baseUrl,
+  }) async {
+    final url = '$baseUrl/v1/chat/completions';
+    final systemPrompt = prompt.trim().isEmpty
+        ? 'You are a text refinement assistant. Polish the user-provided transcript by removing filler words, correcting self-corrections, and adding punctuation. Output only the polished text.'
+        : prompt.trim();
+
+    AppLogger.log(
+        'Refine-chat', 'POST $url model=$model prompt=${systemPrompt.length}c text=${rawText.length}c');
+
+    Response<dynamic> response;
+    try {
+      response = await _dio.post<dynamic>(
+        url,
+        data: {
+          'model': model,
+          'messages': [
+            {'role': 'system', 'content': systemPrompt},
+            {'role': 'user', 'content': rawText},
+          ],
+        },
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $apiKey',
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
+    } on DioException catch (e) {
+      throw _wrapDioError('Refine chat POST $url', e);
+    }
+
+    Map<String, dynamic>? body;
+    if (response.data is Map<String, dynamic>) {
+      body = response.data as Map<String, dynamic>;
+    } else if (response.data is String) {
+      body = jsonDecode(response.data as String) as Map<String, dynamic>;
+    }
+    final choices = body?['choices'] as List?;
+    if (choices == null || choices.isEmpty) {
+      throw Exception('優化回應沒有 choices：${response.data}');
+    }
+    final message =
+        (choices.first as Map<String, dynamic>)['message'] as Map<String, dynamic>?;
+    final content = message?['content'];
+    final text = (content is String) ? content.trim() : '';
+
+    final usage = body?['usage'] as Map<String, dynamic>?;
+    return (
+      text: text,
+      inputTokens: usage?['prompt_tokens'] as int?,
+      outputTokens: usage?['completion_tokens'] as int?,
+    );
+  }
+
+  Future<TranscriptionResult> _refineWithGemini({
+    required String rawText,
+    required String apiKey,
+    required String model,
+    required String prompt,
+    String? customEndpoint,
+  }) async {
+    final base = (customEndpoint == null || customEndpoint.isEmpty)
+        ? 'https://generativelanguage.googleapis.com/v1beta'
+        : _stripTrailingSlash(customEndpoint);
+    final url = '$base/models/$model:generateContent';
+    final systemPrompt = prompt.trim().isEmpty
+        ? 'Polish the following transcript. Output only the cleaned text.'
+        : prompt.trim();
+
+    AppLogger.log('Refine-gemini', 'POST $url model=$model');
+
+    Response<Map<String, dynamic>> response;
+    try {
+      response = await _dio.post<Map<String, dynamic>>(
+        url,
+        data: {
+          'contents': [
+            {
+              'parts': [
+                {'text': '$systemPrompt\n\n---\n\n$rawText'},
+              ],
+            },
+          ],
+        },
+        options: Options(
+          headers: {
+            'x-goog-api-key': apiKey,
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
+    } on DioException catch (e) {
+      throw _wrapDioError('Refine Gemini POST $url', e);
+    }
+
+    final candidates = response.data?['candidates'] as List?;
+    if (candidates == null || candidates.isEmpty) {
+      throw Exception('Gemini 優化失敗：無候選回應');
+    }
+    final parts = candidates[0]['content']?['parts'] as List?;
+    if (parts == null || parts.isEmpty) {
+      throw Exception('Gemini 優化失敗：內容為空');
+    }
+    final text = (parts[0]['text'] as String? ?? '').trim();
+    final usage = response.data?['usageMetadata'] as Map<String, dynamic>?;
+    return (
+      text: text,
+      inputTokens: usage?['promptTokenCount'] as int?,
+      outputTokens: usage?['candidatesTokenCount'] as int?,
+    );
+  }
+
   /// Fetches the model list from an OpenAI-compatible `/v1/models` endpoint
   /// (e.g. a LiteLLM proxy). Returns id+name records; callers map to UI
   /// entities. The `id` is what gets sent to the transcription endpoint.

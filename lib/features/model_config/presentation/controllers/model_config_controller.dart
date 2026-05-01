@@ -108,3 +108,90 @@ class DynamicModelsController extends _$DynamicModelsController {
   }
 }
 
+@riverpod
+class RefinementProviderController extends _$RefinementProviderController {
+  ModelConfigRepository get _repo => _buildRepository();
+
+  @override
+  Future<({String? providerId, String? modelId, String? apiKey, String? customEndpoint})>
+      build() async {
+    final providerId = await _repo.getSelectedRefinementProviderId();
+    return (
+      providerId: providerId,
+      modelId: providerId == null
+          ? null
+          : await _repo.getSelectedRefinementModelId(providerId),
+      apiKey: providerId == null
+          ? null
+          : await _repo.getRefinementApiKey(providerId),
+      customEndpoint: providerId == null
+          ? null
+          : await _repo.getRefinementCustomEndpoint(providerId),
+    );
+  }
+
+  Future<void> selectProvider(String providerId) async {
+    await _repo.saveSelectedRefinementProviderId(providerId);
+    ref.invalidateSelf();
+  }
+
+  Future<void> selectModel(String modelId) async {
+    final s = await future;
+    if (s.providerId != null) {
+      await _repo.saveSelectedRefinementModelId(s.providerId!, modelId);
+      ref.invalidateSelf();
+    }
+  }
+
+  Future<void> saveApiKey(String apiKey) async {
+    final s = await future;
+    if (s.providerId != null) {
+      await _repo.saveRefinementApiKey(s.providerId!, apiKey);
+      ref.invalidateSelf();
+    }
+  }
+
+  Future<void> saveCustomEndpoint(String endpoint) async {
+    final s = await future;
+    if (s.providerId != null) {
+      await _repo.saveRefinementCustomEndpoint(s.providerId!, endpoint);
+      ref.invalidateSelf();
+    }
+  }
+}
+
+/// Refinement-specific dynamic model list (separate cache from speech, so the
+/// user can point speech and refinement at different LiteLLM proxies if they
+/// want).
+@Riverpod(keepAlive: true)
+class DynamicRefinementModelsController
+    extends _$DynamicRefinementModelsController {
+  ModelConfigRepository get _repo => _buildRepository();
+  SpeechRecognitionService get _service => getIt<SpeechRecognitionService>();
+
+  @override
+  Future<List<AiModel>> build(String providerId) async {
+    return _repo.getRefinementCachedModels(providerId);
+  }
+
+  Future<void> refresh({
+    required String providerId,
+    required String baseUrl,
+    required String apiKey,
+  }) async {
+    state = const AsyncLoading();
+    try {
+      final fetched = await _service.fetchAvailableModels(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+      );
+      final models =
+          fetched.map((m) => AiModel(id: m.id, name: m.name)).toList();
+      await _repo.saveRefinementCachedModels(providerId, models);
+      state = AsyncData(models);
+    } catch (e, st) {
+      state = AsyncError(e, st);
+    }
+  }
+}
+

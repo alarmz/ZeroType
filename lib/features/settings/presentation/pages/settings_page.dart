@@ -152,6 +152,24 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with WidgetsBinding
                       error: (_, __) => const SizedBox.shrink(),
                     ),
                     const Divider(height: 1, indent: 56),
+                    // Refinement enabled
+                    settings.when(
+                      data: (data) => _SettingTile(
+                        icon: Icons.auto_fix_high,
+                        title: '啟用文字優化',
+                        subtitle:
+                            '轉錄完成後再丟給聊天模型做格式化／錯字修正（在「模型」頁設定 provider 與模型）',
+                        trailing: Switch(
+                          value: data.refinementEnabled,
+                          onChanged: (val) => ref
+                              .read(settingsControllerProvider.notifier)
+                              .toggleRefinementEnabled(val),
+                        ),
+                      ),
+                      loading: () => const _LoadingTile(),
+                      error: (_, __) => const SizedBox.shrink(),
+                    ),
+                    const Divider(height: 1, indent: 56),
                     // History Retention Days
                     settings.when(
                       data: (data) => _SettingTile(

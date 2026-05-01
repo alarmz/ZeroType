@@ -41,6 +41,13 @@ class ModelConfigPage extends ConsumerWidget {
                 isRequired: true,
                 child: _SpeechConfigSection(providers: config.speechRecognition),
               ),
+              const SizedBox(height: 24),
+              _ConfigSection(
+                title: '文字優化（可選）',
+                isRequired: false,
+                child:
+                    _RefinementConfigSection(providers: config.speechRecognition),
+              ),
             ],
           ),
         ),
@@ -230,6 +237,128 @@ class _SpeechConfigSection extends ConsumerWidget {
   }
 }
 
+
+class _RefinementConfigSection extends ConsumerWidget {
+  const _RefinementConfigSection({required this.providers});
+  final List<AiProvider> providers;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final stateAsync = ref.watch(refinementProviderControllerProvider);
+    final cs = Theme.of(context).colorScheme;
+
+    return stateAsync.when(
+      data: (state) {
+        final selectedProvider = providers.firstWhere(
+          (p) => p.id == state.providerId,
+          orElse: () => providers.first,
+        );
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '把語音辨識結果再丟給一個聊天模型做格式化、錯字修正、條列整理。'
+              '需要在「設定」頁打開「啟用文字優化」才會生效。',
+              style: TextStyle(
+                color: cs.onSurface.withAlpha(150),
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text('選擇 Provider', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              children: providers.map((p) {
+                final isSelected = p.id == state.providerId;
+                return ChoiceChip(
+                  label: Text(p.name),
+                  selected: isSelected,
+                  onSelected: (val) {
+                    if (val) {
+                      ref
+                          .read(refinementProviderControllerProvider.notifier)
+                          .selectProvider(p.id);
+                    }
+                  },
+                  backgroundColor: cs.surface,
+                  selectedColor: cs.primary.withAlpha(50),
+                  labelStyle: TextStyle(
+                    color: isSelected ? cs.primary : cs.onSurface.withAlpha(150),
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                  side: BorderSide(
+                    color: isSelected ? cs.primary : cs.onSurface.withAlpha(30),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 24),
+            _ApiKeyInput(
+              providerId: state.providerId ?? '',
+              initialValue: state.apiKey ?? '',
+              onSave: (val) => ref
+                  .read(refinementProviderControllerProvider.notifier)
+                  .saveApiKey(val),
+            ),
+            if (state.providerId == 'litellm') ...[
+              const SizedBox(height: 24),
+              _LiteLLMEndpointInput(
+                initialValue: state.customEndpoint ?? '',
+                onSave: (val) => ref
+                    .read(refinementProviderControllerProvider.notifier)
+                    .saveCustomEndpoint(val),
+              ),
+            ],
+            const SizedBox(height: 24),
+            const Text('選擇模型', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            if (state.providerId == 'litellm')
+              _LiteLLMModelPicker(
+                baseUrl: state.customEndpoint ?? '',
+                apiKey: state.apiKey ?? '',
+                selectedModelId: state.modelId,
+                isRefinement: true,
+                onChanged: (val) {
+                  if (val != null) {
+                    ref
+                        .read(refinementProviderControllerProvider.notifier)
+                        .selectModel(val);
+                  }
+                },
+              )
+            else
+              _ModelDropdown(
+                models: selectedProvider.models,
+                selectedModelId: state.modelId,
+                onChanged: (val) {
+                  if (val != null) {
+                    ref
+                        .read(refinementProviderControllerProvider.notifier)
+                        .selectModel(val);
+                  }
+                },
+              ),
+            if (state.providerId != 'litellm') ...[
+              const SizedBox(height: 24),
+              _AdvancedConfigSection(
+                providerId: state.providerId ?? '',
+                customEndpoint: state.customEndpoint ?? '',
+                onSaveCustomEndpoint: (val) => ref
+                    .read(refinementProviderControllerProvider.notifier)
+                    .saveCustomEndpoint(val),
+              ),
+            ],
+          ],
+        );
+      },
+      loading: () =>
+          const SizedBox(height: 100, child: Center(child: CircularProgressIndicator())),
+      error: (err, _) => Text('錯誤: $err'),
+    );
+  }
+}
 
 class _ApiKeyInput extends StatefulWidget {
   const _ApiKeyInput({
@@ -587,20 +716,23 @@ class _LiteLLMModelPicker extends ConsumerWidget {
     required this.apiKey,
     required this.selectedModelId,
     required this.onChanged,
+    this.isRefinement = false,
   });
 
   final String baseUrl;
   final String apiKey;
   final String? selectedModelId;
   final ValueChanged<String?> onChanged;
+  final bool isRefinement;
 
   bool get _canFetch => baseUrl.isNotEmpty && apiKey.isNotEmpty;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final cs = Theme.of(context).colorScheme;
-    final modelsAsync =
-        ref.watch(dynamicModelsControllerProvider('litellm'));
+    final modelsAsync = isRefinement
+        ? ref.watch(dynamicRefinementModelsControllerProvider('litellm'))
+        : ref.watch(dynamicModelsControllerProvider('litellm'));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -622,16 +754,32 @@ class _LiteLLMModelPicker extends ConsumerWidget {
                   : const Icon(Icons.refresh),
               onPressed: _canFetch && !modelsAsync.isLoading
                   ? () async {
-                      await ref
-                          .read(dynamicModelsControllerProvider('litellm').notifier)
-                          .refresh(
-                            providerId: 'litellm',
-                            baseUrl: baseUrl,
-                            apiKey: apiKey,
-                          );
+                      if (isRefinement) {
+                        await ref
+                            .read(dynamicRefinementModelsControllerProvider(
+                                    'litellm')
+                                .notifier)
+                            .refresh(
+                              providerId: 'litellm',
+                              baseUrl: baseUrl,
+                              apiKey: apiKey,
+                            );
+                      } else {
+                        await ref
+                            .read(dynamicModelsControllerProvider('litellm')
+                                .notifier)
+                            .refresh(
+                              providerId: 'litellm',
+                              baseUrl: baseUrl,
+                              apiKey: apiKey,
+                            );
+                      }
                       if (context.mounted) {
-                        final newState =
-                            ref.read(dynamicModelsControllerProvider('litellm'));
+                        final newState = isRefinement
+                            ? ref.read(dynamicRefinementModelsControllerProvider(
+                                'litellm'))
+                            : ref.read(
+                                dynamicModelsControllerProvider('litellm'));
                         final msg = newState.hasError
                             ? '抓取失敗：${newState.error}'
                             : '已更新 ${newState.value?.length ?? 0} 個模型';

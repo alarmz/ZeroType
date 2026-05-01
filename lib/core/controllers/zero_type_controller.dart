@@ -18,6 +18,7 @@ import 'package:zero_type/features/history/domain/repositories/history_repositor
 import 'package:zero_type/features/model_config/presentation/controllers/model_config_controller.dart';
 import 'package:zero_type/features/prompt/presentation/controllers/prompt_controller.dart';
 import 'package:zero_type/features/dictionary/presentation/controllers/dictionary_controller.dart';
+import 'package:zero_type/features/settings/presentation/controllers/settings_controller.dart';
 
 part 'zero_type_controller.g.dart';
 
@@ -155,6 +156,49 @@ class ZeroTypeController extends _$ZeroTypeController {
     }
   }
 
+  /// Optional post-transcription LLM refinement. Returns the refined text on
+  /// success, `null` if the feature is disabled / not configured / errors
+  /// (the caller falls back to the raw transcript so a misconfigured
+  /// refinement step never blocks the user from getting their text pasted).
+  Future<String?> _maybeRefine(String rawText) async {
+    final settings = await ref.read(settingsControllerProvider.future);
+    if (!settings.refinementEnabled) {
+      AppLogger.log('Refine', 'skipped: toggle is off');
+      return null;
+    }
+    final cfg = await ref.read(refinementProviderControllerProvider.future);
+    if (cfg.providerId == null || cfg.providerId!.isEmpty ||
+        cfg.modelId == null || cfg.modelId!.isEmpty ||
+        cfg.apiKey == null || cfg.apiKey!.isEmpty) {
+      AppLogger.log('Refine',
+          'skipped: refinement provider/model/apiKey not all configured');
+      return null;
+    }
+    try {
+      await _showNativeOverlay('transcribing', '優化中');
+      final prompt = await ref.read(refinementPromptControllerProvider.future);
+      final refined = await getIt<SpeechRecognitionService>().refine(
+        rawText: rawText,
+        apiKey: cfg.apiKey!,
+        provider: cfg.providerId!,
+        model: cfg.modelId!,
+        prompt: prompt,
+        customEndpoint: cfg.customEndpoint,
+      );
+      if (refined.text.isEmpty) {
+        AppLogger.log('Refine', 'returned empty; falling back to raw');
+        return null;
+      }
+      AppLogger.log('Refine',
+          'success rawLen=${rawText.length} refinedLen=${refined.text.length}');
+      return refined.text;
+    } catch (e, st) {
+      AppLogger.log('Refine', 'failed; falling back to raw',
+          error: e, st: st);
+      return null;
+    }
+  }
+
   /// Centralised early-exit error path. Sets state to error with [msg] (so the
   /// Flutter overlay on Windows shows the actual reason), fires the macOS
   /// native overlay equivalent, plays cancel sound, and resets after 3s.
@@ -236,6 +280,12 @@ class ZeroTypeController extends _$ZeroTypeController {
         throw Exception('未能辨識出任何文字');
       }
 
+      // Optional refinement step: feed the transcript through a chat LLM
+      // to clean up filler words / fix punctuation. Settings toggle is
+      // checked first; if off, this is a no-op.
+      final refinedText = await _maybeRefine(result.text);
+      final finalText = refinedText ?? result.text;
+
       // Move audio to history dir and save record
       final historyRepo = getIt<HistoryRepository>();
       final audioHistoryPath = await historyRepo.moveAudioFile(filePath);
@@ -243,7 +293,7 @@ class ZeroTypeController extends _$ZeroTypeController {
       final recordId = DateTime.now().millisecondsSinceEpoch.toString();
       final record = TranscriptionRecord(
         id: recordId,
-        text: result.text,
+        text: finalText,
         createdAt: DateTime.now(),
         audioPath: audioHistoryPath,
         durationMs: durationMs,
@@ -261,8 +311,8 @@ class ZeroTypeController extends _$ZeroTypeController {
       await historyRepo.accumulateStats(record);
 
       // Output
-      state = state.copyWith(status: ZeroTypeStatus.done, result: result.text);
-      await Clipboard.setData(ClipboardData(text: result.text));
+      state = state.copyWith(status: ZeroTypeStatus.done, result: finalText);
+      await Clipboard.setData(ClipboardData(text: finalText));
       await Future.delayed(const Duration(milliseconds: 150));
 
       print('[ZeroType] Simulating paste...');

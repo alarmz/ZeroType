@@ -47,13 +47,27 @@ class SpeechRecognitionService {
         if (customEndpoint == null || customEndpoint.isEmpty) {
           throw Exception('LiteLLM 需要在「進階設定」中填寫 Proxy Base URL');
         }
-        return _transcribeWithOpenAI(
+        final base = _stripTrailingSlash(customEndpoint);
+        // Whisper-style transcription models go to /v1/audio/transcriptions.
+        // Everything else (Gemini, GPT-4o-audio, Claude, …) is treated as a
+        // multimodal chat model and gets the audio embedded in a
+        // /v1/chat/completions request — that's the only LiteLLM-supported
+        // path that actually works for non-whisper backends.
+        if (model.toLowerCase().contains('whisper')) {
+          return _transcribeWithOpenAI(
+            audioFilePath: audioFilePath,
+            apiKey: apiKey,
+            model: model,
+            prompt: prompt,
+            customEndpoint: '$base/v1/audio/transcriptions',
+          );
+        }
+        return _transcribeWithChatCompletions(
           audioFilePath: audioFilePath,
           apiKey: apiKey,
           model: model,
           prompt: prompt,
-          customEndpoint:
-              '${_stripTrailingSlash(customEndpoint)}/v1/audio/transcriptions',
+          baseUrl: base,
         );
       default:
         throw Exception('不支援的語音辨識服務商：$provider');
@@ -98,6 +112,99 @@ class SpeechRecognitionService {
     } on DioException catch (e) {
       throw _wrapDioError('fetchAvailableModels GET $url', e);
     }
+  }
+
+  /// Multimodal transcription via the OpenAI-compatible `/v1/chat/completions`
+  /// endpoint. Used by the LiteLLM provider for non-whisper models (Gemini,
+  /// GPT-4o-audio, Claude with audio, etc.) — LiteLLM bridges the OpenAI
+  /// `input_audio` content part to the backend's native audio API.
+  Future<TranscriptionResult> _transcribeWithChatCompletions({
+    required String audioFilePath,
+    required String apiKey,
+    required String model,
+    required String prompt,
+    required String baseUrl,
+  }) async {
+    final url = '$baseUrl/v1/chat/completions';
+    final file = File(audioFilePath);
+    if (!file.existsSync()) {
+      throw Exception('找不到音檔：$audioFilePath');
+    }
+    final bytes = await file.readAsBytes();
+    final base64Audio = base64Encode(bytes);
+
+    final lower = audioFilePath.toLowerCase();
+    final format = lower.endsWith('.m4a')
+        ? 'm4a'
+        : lower.endsWith('.mp3')
+            ? 'mp3'
+            : lower.endsWith('.wav')
+                ? 'wav'
+                : lower.endsWith('.ogg')
+                    ? 'ogg'
+                    : 'm4a';
+
+    final finalPrompt =
+        prompt.isEmpty ? 'Transcribe the speech in this audio.' : prompt;
+
+    AppLogger.log('LiteLLM-chat',
+        'POST $url model=$model format=$format bytes=${bytes.length}');
+
+    Response<dynamic> response;
+    try {
+      response = await _dio.post<dynamic>(
+        url,
+        data: {
+          'model': model,
+          'messages': [
+            {
+              'role': 'user',
+              'content': [
+                {'type': 'text', 'text': finalPrompt},
+                {
+                  'type': 'input_audio',
+                  'input_audio': {
+                    'data': base64Audio,
+                    'format': format,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $apiKey',
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
+    } on DioException catch (e) {
+      throw _wrapDioError('LiteLLM chat POST $url', e);
+    }
+
+    Map<String, dynamic>? body;
+    if (response.data is Map<String, dynamic>) {
+      body = response.data as Map<String, dynamic>;
+    } else if (response.data is String) {
+      body = jsonDecode(response.data as String) as Map<String, dynamic>;
+    }
+    final choices = body?['choices'] as List?;
+    if (choices == null || choices.isEmpty) {
+      throw Exception('LiteLLM 回應沒有 choices 欄位：${response.data}');
+    }
+    final message = (choices.first as Map<String, dynamic>)['message']
+        as Map<String, dynamic>?;
+    final content = message?['content'];
+    final text = (content is String) ? content.trim() : '';
+
+    final usage = body?['usage'] as Map<String, dynamic>?;
+    final inputTokens = usage?['prompt_tokens'] as int?;
+    final outputTokens = usage?['completion_tokens'] as int?;
+
+    AppLogger.log('LiteLLM-chat',
+        'success length=${text.length} tokens: in=$inputTokens out=$outputTokens');
+    return (text: text, inputTokens: inputTokens, outputTokens: outputTokens);
   }
 
   static String _stripTrailingSlash(String s) =>

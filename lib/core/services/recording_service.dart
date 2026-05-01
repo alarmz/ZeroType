@@ -35,12 +35,19 @@ class RecordingService {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     _currentFilePath = '${dir.path}/zerotype_$timestamp.m4a';
 
-    print('[RecordingService] starting at $_currentFilePath');
+    // Windows Media Foundation's AAC encoder only accepts 44100 or 48000 Hz
+    // (16000 Hz triggers MF_E_INVALIDMEDIATYPE / 0xC00D36B4 immediately).
+    // macOS's AVAssetWriter accepts 16000 Hz happily, which feeds Whisper at
+    // its native rate and avoids server-side resampling.
+    final sampleRate = Platform.isWindows ? 44100 : 16000;
+
+    print(
+        '[RecordingService] starting at $_currentFilePath @ ${sampleRate}Hz');
     await _recorder.start(
-      const RecordConfig(
+      RecordConfig(
         encoder: AudioEncoder.aacLc,
         bitRate: 128000,
-        sampleRate: 16000,
+        sampleRate: sampleRate,
       ),
       path: _currentFilePath!,
     );

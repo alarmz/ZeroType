@@ -385,15 +385,69 @@ class SpeechRecognitionService {
     final message = (choices.first as Map<String, dynamic>)['message']
         as Map<String, dynamic>?;
     final content = message?['content'];
-    final text = (content is String) ? content.trim() : '';
+    final rawText = (content is String) ? content.trim() : '';
+    final text = _stripPromptStructureEcho(rawText);
 
     final usage = body?['usage'] as Map<String, dynamic>?;
     final inputTokens = usage?['prompt_tokens'] as int?;
     final outputTokens = usage?['completion_tokens'] as int?;
 
     AppLogger.log('LiteLLM-chat',
-        'success length=${text.length} tokens: in=$inputTokens out=$outputTokens');
+        'success length=${text.length} (raw=${rawText.length}) tokens: in=$inputTokens out=$outputTokens');
     return (text: text, inputTokens: inputTokens, outputTokens: outputTokens);
+  }
+
+  /// Models without a thinking-mode channel (e.g. gemini-2.5-flash-lite)
+  /// sometimes echo the prompt's YAML-style headers — `self_correction:`,
+  /// `reasoning:`, `output:`, `language:`, `dictionary:` — back into the
+  /// response, mixing the actual transcript with the meta-structure that
+  /// was supposed to be internal-only.
+  ///
+  /// Two observed shapes:
+  ///   (A) plain transcript first, then YAML noise:
+  ///       <transcript>
+  ///       self_correction:
+  ///         - ...
+  ///       language: ...
+  ///   (B) full YAML where the answer is the value of `output:`:
+  ///       self_correction: ...
+  ///       output: |
+  ///         <transcript>
+  ///
+  /// Strategy: if a structural key appears, prefer the value of an explicit
+  /// `output:` block when one exists; otherwise cut everything from the
+  /// first structural key onward.
+  static String _stripPromptStructureEcho(String raw) {
+    if (raw.isEmpty) return raw;
+
+    // Top-level YAML keys the prompt happens to use. Match at line start so
+    // we don't accidentally chop transcript text that happens to contain
+    // 'output:' as substance.
+    final structureKey = RegExp(
+      r'^\s*(self_correction|reasoning|language|dictionary|examples|instructions|name|description)\s*:',
+      multiLine: true,
+    );
+    final structMatch = structureKey.firstMatch(raw);
+    if (structMatch == null) return raw;
+
+    // Pattern (B): an explicit `output:` block. Capture either an inline
+    // value (`output: foo`) or a YAML literal block (`output: |\n  foo`).
+    final outputBlock = RegExp(
+      r'^\s*output\s*:\s*(?:\|\s*\n([\s\S]+?)|([^\n]+))(?=\n\s*\w+\s*:|\Z)',
+      multiLine: true,
+    ).firstMatch(raw);
+    if (outputBlock != null) {
+      final block = outputBlock.group(1) ?? outputBlock.group(2) ?? '';
+      // Un-indent a YAML literal block (lines were prefixed with 2+ spaces).
+      final unindented = block
+          .split('\n')
+          .map((l) => l.replaceFirst(RegExp(r'^  '), ''))
+          .join('\n');
+      return unindented.trim();
+    }
+
+    // Pattern (A): chop everything from the first structural key onward.
+    return raw.substring(0, structMatch.start).trim();
   }
 
   static String _stripTrailingSlash(String s) =>
